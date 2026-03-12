@@ -624,36 +624,53 @@ async function loadGlobalData(){
 }
 
 // 한국
-function getEstimatedRound(){
-  const first=new Date(2002,11,7);
-  return Math.floor((new Date()-first)/(7*24*60*60*1000))+1;
+const KR_WORKER='https://kr-lotto-proxy.ryanparkai81.workers.dev';
+let krAllData=null; // cache all rounds
+const krCache={};
+
+async function loadKrAllData(){
+  if(krAllData)return krAllData;
+  const res=await fetch(KR_WORKER+'/');
+  if(!res.ok)throw new Error('kr-worker failed');
+  krAllData=await res.json();
+  // also populate krCache
+  krAllData.forEach(r=>{krCache[r.round]=r;});
+  return krAllData;
 }
+
 async function fetchKrRound(n){
+  if(krCache[n])return krCache[n];
   try{
-    const res=await fetch(PROXY(`https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo=${n}`));
+    const res=await fetch(`${KR_WORKER}/?drwNo=${n}`);
     if(!res.ok)return null;
-    const data=await res.json();
-    const d=JSON.parse(data.contents);
-    if(d.returnValue!=='success')return null;
-    return{round:d.drwNo,date:d.drwNoDate,numbers:[d.drwtNo1,d.drwtNo2,d.drwtNo3,d.drwtNo4,d.drwtNo5,d.drwtNo6].sort((a,b)=>a-b),bonus:d.bnusNo,jackpot:d.firstWinamnt,winners:d.firstPrzwnerCo};
+    const d=await res.json();
+    if(d.error)return null;
+    krCache[n]=d;
+    return d;
   }catch{return null;}
 }
-const krCache={};
+
 async function fetchKrCached(n){
   if(krCache[n])return krCache[n];
-  const d=await fetchKrRound(n); if(d)krCache[n]=d; return d;
+  return fetchKrRound(n);
 }
+
 async function findLatestKrRound(){
-  const est=getEstimatedRound();
-  for(let i=est+3;i>=est-8;i--){const d=await fetchKrCached(i);if(d)return i;}
+  try{
+    const data=await loadKrAllData();
+    if(data&&data.length>0)return data[0].round;
+  }catch{}
   return null;
 }
 async function loadKrResults(){
   const el=document.getElementById('kr-results');
-  const latest=await findLatestKrRound();
-  if(!latest){el.innerHTML='<div class="error-msg">데이터를 불러올 수 없습니다. <a href="https://www.dhlottery.co.kr" target="_blank" rel="noopener">공식 사이트 방문</a></div>';return;}
-  const rounds=await Promise.all([0,1,2,3,4].map(i=>fetchKrCached(latest-i)));
-  const valid=rounds.filter(Boolean);
+  let valid;
+  try{
+    const allData=await loadKrAllData();
+    valid=allData.slice(0,5);
+  }catch{
+    el.innerHTML='<div class="error-msg">데이터를 불러올 수 없습니다. <a href="https://www.dhlottery.co.kr" target="_blank" rel="noopener">공식 사이트 방문</a></div>';return;
+  }
   if(!valid.length){el.innerHTML='<div class="error-msg">데이터를 불러올 수 없습니다.</div>';return;}
   el.innerHTML='';
   valid.forEach(r=>{
@@ -813,25 +830,23 @@ async function loadSmartData(){
   prog.style.display='block'; progBar.style.width='0%';
 
   const weeks=smartPeriod==='1m'?4:smartPeriod==='3m'?13:52;
-  progText.textContent=`최신 회차 확인 중...`;
+  progText.textContent=`데이터 불러오는 중...`;
+  progBar.style.width='30%';
 
-  if(!smartLatestRound){
-    smartLatestRound=await findLatestKrRound();
-  }
-  if(!smartLatestRound){
+  let allData;
+  try{
+    allData=await loadKrAllData();
+  }catch(e){
     prog.style.display='none'; btn.disabled=false; btn.textContent='🔥 분석 시작';
     alert('데이터를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.'); return;
   }
 
-  const roundNums=Array.from({length:weeks},(_,i)=>smartLatestRound-i);
-  const results=[];
-  for(let i=0;i<roundNums.length;i+=8){
-    const batch=await Promise.all(roundNums.slice(i,i+8).map(n=>fetchKrCached(n)));
-    results.push(...batch.filter(Boolean));
-    const pct=Math.round(((i+8)/roundNums.length)*100);
-    progBar.style.width=Math.min(pct,100)+'%';
-    progText.textContent=`데이터 불러오는 중... ${results.length}/${weeks}회차`;
-  }
+  if(!smartLatestRound) smartLatestRound=allData[0].round;
+  progBar.style.width='80%';
+  progText.textContent=`분석 중...`;
+
+  const results=allData.slice(0,weeks);
+  progBar.style.width='100%';
 
   prog.style.display='none';
   if(results.length<2){btn.disabled=false;btn.textContent='🔥 분석 시작';alert('충분한 데이터를 불러올 수 없습니다.');return;}
